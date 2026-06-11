@@ -1,0 +1,35 @@
+#!/bin/bash
+# Stage 1a: stream chr22 from each S3 BAM (copyq = only queue with external network).
+# One job loops sequentially over manifest rows START..END (avoids copyq array limits).
+# Re-running is safe: BAMs already present are skipped.
+#PBS -N stream_chr22
+#PBS -P cy94
+#PBS -q copyq
+#PBS -l ncpus=1
+#PBS -l mem=8GB
+#PBS -l walltime=10:00:00
+#PBS -l storage=scratch/cy94
+#PBS -l wd
+#PBS -j oe
+#PBS -o /scratch/cy94/rs4477/logs/extract/stream_loop.log
+set -uo pipefail
+module load samtools/1.22
+MANIFEST=/scratch/cy94/rs4477/1kgp-cis-mqtl/config/chr22_manifest_95.tsv
+BAMDIR=/scratch/cy94/rs4477/1kgp-cis-mqtl/chr22_bams
+mkdir -p "$BAMDIR" /scratch/cy94/rs4477/logs/extract
+START=${START:-1}; END=${END:-95}
+echo "[$(date)] streaming rows $START..$END"
+for i in $(seq "$START" "$END"); do
+  LINE=$(awk -v n=$((i+1)) 'NR==n' "$MANIFEST")
+  SID=$(echo "$LINE" | cut -f1); URL=$(echo "$LINE" | cut -f2)
+  [ -n "$SID" ] || continue
+  OUT="$BAMDIR/$SID.chr22.bam"
+  if [ -s "$OUT.bai" ]; then echo "[$(date)] $SID exists, skip"; continue; fi
+  echo "[$(date)] $SID ($i) streaming"
+  if samtools view -b "$URL" chr22 -o "$OUT" && samtools index "$OUT"; then
+    echo "[$(date)] $SID ok $(du -h "$OUT"|cut -f1)"
+  else
+    echo "[$(date)] $SID FAILED"; rm -f "$OUT" "$OUT.bai"
+  fi
+done
+echo "[$(date)] stream loop done"

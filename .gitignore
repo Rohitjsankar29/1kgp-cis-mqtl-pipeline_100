@@ -1,0 +1,43 @@
+# --- data & large outputs (never commit) ---
+*.bam
+*.bam.bai
+*.bed.gz
+*.bedmethyl.gz
+*.tbi
+*.vcf
+*.vcf.gz
+*.bed
+*.bim
+*.fam
+*.pgen
+*.pvar
+*.psam
+*.eigenvec
+*.eigenval
+*.parquet
+*.txt.gz
+reference/
+chr22_bams/
+methylation/
+matrix/
+genotypes/
+covariates/
+tensorqtl/
+
+# --- logs ---
+logs/
+*.log
+*.o[0-9]*
+*.e[0-9]*
+
+# --- generated config (sample sheets, keep/rename lists, manifests) ---
+config/*.tsv
+config/*_samples.txt
+config/keep_geno.txt
+config/rename_na2gm.txt
+
+# --- environments / caches ---
+micromamba/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/

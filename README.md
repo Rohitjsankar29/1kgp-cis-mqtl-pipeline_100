@@ -1,0 +1,106 @@
+# cis-mQTL prioritisation pipeline (1000 Genomes ONT)
+
+A reproducible, CpG-centric **cis-methylation QTL** framework built on long-read
+(Oxford Nanopore) data from the 1000 Genomes Project, developed on chromosome 22
+as a pilot before scaling genome-wide and applying to the PROPHECY Aboriginal
+cohort.
+
+**Author:** Rohit Jaya Sankar — MSc, University of Western Australia
+**Supervisor:** Dr Sam Buckberry
+**Compute:** NCI Gadi (project `cy94`)
+
+---
+
+## Pipeline overview
+
+```
+ONT modBAM (S3)
+   │  stream chr22 only (~2 GB/sample, not ~100 GB)         [01_extraction]
+   ▼
+modkit pileup  →  per-sample CpG bedMethyl (5mC + 5hmC)     [01_extraction]
+   │
+   ▼
+methylation matrix  →  tensorQTL phenotype BED (M-values)   [02_matrix]
+   │
+1000G high-cov VCF  →  PLINK genotypes (chr22, MAF≥0.05)    [03_genotypes]
+   │
+   ▼
+covariates  =  5 genotype PCs + 10 methylation PCs          [04_covariates]
+   │
+   ▼
+tensorQTL  →  permutation → FDR → nominal-for-significant    [05_qtl]
+   │
+   ▼
+downstream: SuSiE fine-mapping · SV integration · annotation · prioritisation  (TODO)
+```
+
+## Repository layout
+
+```
+scripts/
+  01_extraction/   make manifest, stream chr22 from S3, modkit methylation
+  02_matrix/       collapse bedMethyl → tensorQTL phenotype BED
+  03_genotypes/    subset 1000G panel → PLINK (with GM→NA ID mapping)
+  04_covariates/   genotype PCs + methylation PCs
+  05_qtl/          tensorQTL permutation / FDR / nominal + GPU job
+config/            manifests, sample sheets, keep/rename lists (generated)
+env/               environment + tool setup notes
+docs/              WORKFLOW.md — step-by-step run order
+```
+
+See **docs/WORKFLOW.md** for the exact run order and **env/ENVIRONMENT.md** for
+the toolchain.
+
+## Status (chr22 pilot, n = 100)
+
+| Stage | Output | Status |
+|-------|--------|--------|
+| Methylation extraction | 100 samples, chr22, 5mC + 5hmC | ✅ |
+| Phenotype matrix | 601,535 CpGs × 100 (M-values, covered in ≥90% samples) | ✅ |
+| Genotypes | 111,853 chr22 SNVs × 100 (MAF≥0.05) | ✅ |
+| Covariates | 15 (5 genotype PCs + 10 methylation PCs) | ✅ |
+| cis-mQTL permutation | GPU (V100) permutation pass | ▶ running |
+| FDR + nominal | significant CpGs, fine-map input | next |
+| Fine-mapping / SV / annotation / scoring | — | TODO |
+
+## Key design decisions
+
+- **chr22-only streaming.** BAMs are read remotely from S3 with `samtools view
+  <url> chr22`, pulling ~2 GB per sample instead of the ~100 GB whole-genome
+  BAM — a ~50× reduction in data movement.
+- **5mC and 5hmC both retained.** modkit is run without restricting
+  `--modified-bases`, so every sample yields 5mC (`m`) and, where the basecaller
+  supports it, 5hmC (`h`). 5mC is the primary phenotype; 5hmC is a secondary
+  analysis. (R9 basecallers do not separate the two — handled via covariates.)
+- **Chromosome convention is `chr22` end-to-end.** Methylation and genotypes are
+  both forced to `chr22`; a mismatch silently yields zero cis variants.
+- **Sample IDs.** ONT samples use `GM#####` / `HG#####`; the 1000G genotype panel
+  labels the same individuals `NA#####` / `HG#####`. Stage 03 maps `GM→NA` to
+  subset, then renames back so genotype IDs match the methylation columns exactly.
+- **GTEx-style 3-stage QTL.** permutation (1 p-value/CpG) → FDR → nominal mapping
+  **only** for FDR-significant CpGs. This avoids the all-pairs memory blow-up of
+  genome-wide nominal mapping in CpG-dense regions.
+- **GPU.** tensorQTL runs on a Tesla V100. The V100 is compute capability 7.0
+  (Volta), so the torch build must include `sm_70` — `torch==2.4.1+cu121` works;
+  a `cu130` build does **not** (it dropped Volta and fails with "no kernel
+  image available").
+
+## Quick start
+
+```bash
+# 1. methylation  (copyq stream, then normal-queue modkit)
+qsub scripts/01_extraction/run_stream_chr22_loop.pbs
+qsub scripts/01_extraction/run_modkit_chr22_loop.pbs
+# 2. phenotype matrix
+qsub scripts/02_matrix/run_build_matrix.pbs
+# 3. genotypes
+qsub scripts/03_genotypes/build_genotypes.pbs
+# 4. covariates
+qsub scripts/04_covariates/run_covariates.pbs
+# 5. cis-mQTL permutation (GPU)
+qsub scripts/05_qtl/run_perm_gpu.pbs
+```
+
+Paths in the PBS scripts are specific to the Gadi setup (`/scratch/cy94/rs4477`,
+`/g/data/xl04/rs4477`); adjust the variables at the top of each for a different
+environment.

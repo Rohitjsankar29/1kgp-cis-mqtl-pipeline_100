@@ -1,0 +1,47 @@
+#!/bin/bash
+# Build the 100-sample chr22 5mC methylation matrix for tensorQTL.
+#PBS -N build_matrix
+#PBS -P cy94
+#PBS -q express
+#PBS -l ncpus=1
+#PBS -l mem=16GB
+#PBS -l walltime=00:30:00
+#PBS -l storage=scratch/cy94+gdata/xl04
+#PBS -l wd
+#PBS -j oe
+#PBS -r y
+#PBS -o /scratch/cy94/rs4477/logs/build_matrix.log
+set -uo pipefail
+module load samtools/1.22                       # bgzip, tabix
+PY=/scratch/cy94/rs4477/micromamba/envs/mqtl_tensorqtl/bin/python3
+
+BASE=/scratch/cy94/rs4477/1kgp-cis-mqtl
+MANIFEST=$BASE/config/chr22_manifest_95.tsv
+NEWDIR=$BASE/methylation/chr22
+OLDDIR=/g/data/xl04/rs4477/1kgp-cis-mqtl/methylation/chr22
+SHEET=$BASE/config/samples_100.tsv
+OUTDIR=$BASE/matrix/chr22_100samples
+mkdir -p "$OUTDIR" "$BASE/logs"
+
+# --- build the 100-sample sheet: 95 new (scratch) + 5 old (gdata) ---
+: > "$SHEET"
+tail -n +2 "$MANIFEST" | cut -f1 | while read -r sid; do
+  printf '%s\t%s\n' "$sid" "$NEWDIR/$sid/$sid.chr22.cov5.bedmethyl.gz"
+done >> "$SHEET"
+for sid in HG02470 HG02479 HG03027 HG03045 HG03079; do
+  printf '%s\t%s\n' "$sid" "$OLDDIR/$sid/$sid.chr22.bedmethyl.gz"
+done >> "$SHEET"
+echo "sample sheet: $(wc -l < "$SHEET") samples"
+
+# --- build the matrix (5mC, M-values) ---
+BED=$OUTDIR/methylation_Mval.bed
+$PY /scratch/cy94/rs4477/matrix_build/build_matrix.py \
+  --sheet "$SHEET" --out "$BED" \
+  --chrom chr22 --min-cov 5 --min-frac 0.90 --mod m --mvalue
+
+# --- bgzip + tabix ---
+bgzip -f "$BED"
+tabix -p bed "$BED.gz"
+echo "DONE: $BED.gz"
+zcat "$BED.gz" | cut -f1-4 | head -3
+echo "CpGs: $(( $(zcat "$BED.gz" | wc -l) - 1 ))  |  columns: $(zcat "$BED.gz" | head -1 | awk '{print NF}')"

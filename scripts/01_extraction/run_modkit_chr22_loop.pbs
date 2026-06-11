@@ -1,0 +1,49 @@
+#!/bin/bash
+# Stage 1b: modkit pileup on each staged chr22 BAM (normal queue, 8 threads).
+# Outputs ALL detected mods (5mC 'm' and 5hmC 'h'); cov>=5 filtered bedMethyl.
+# Re-running is safe: samples already finished are skipped.
+#PBS -N modkit_chr22
+#PBS -P cy94
+#PBS -q normal
+#PBS -l ncpus=8
+#PBS -l mem=32GB
+#PBS -l walltime=06:00:00
+#PBS -l jobfs=10GB
+#PBS -l storage=scratch/cy94
+#PBS -l wd
+#PBS -j oe
+#PBS -o /scratch/cy94/rs4477/logs/extract/modkit_loop.log
+set -uo pipefail
+module load samtools/1.22
+export PATH=/scratch/cy94/rs4477/micromamba/envs/mqtl_modkit/bin:$PATH
+MANIFEST=/scratch/cy94/rs4477/1kgp-cis-mqtl/config/chr22_manifest_95.tsv
+BAMDIR=/scratch/cy94/rs4477/1kgp-cis-mqtl/chr22_bams
+OUTROOT=/scratch/cy94/rs4477/1kgp-cis-mqtl/methylation/chr22
+REF=/scratch/cy94/rs4477/reference/hg38.fa
+MIN_COV=5
+START=${START:-1}; END=${END:-95}
+for i in $(seq "$START" "$END"); do
+  LINE=$(awk -v n=$((i+1)) 'NR==n' "$MANIFEST")
+  SID=$(echo "$LINE" | cut -f1)
+  [ -n "$SID" ] || continue
+  BAM="$BAMDIR/$SID.chr22.bam"
+  if [ ! -s "$BAM" ]; then echo "[$(date)] $SID: no BAM, skip"; continue; fi
+  OUTDIR="$OUTROOT/$SID"; mkdir -p "$OUTDIR"
+  LOG="$OUTDIR/$SID.chr22.modkit.log"
+  RAW="$OUTDIR/$SID.chr22.bedmethyl.gz"
+  FILTERED="$OUTDIR/$SID.chr22.cov${MIN_COV}.bedmethyl.gz"
+  if [ -s "$FILTERED" ] && [ -s "$FILTERED.tbi" ]; then echo "[$(date)] $SID done, skip"; continue; fi
+  echo "[$(date)] $SID modkit (all mods)"
+  if modkit pileup --cpg --ref "$REF" --combine-strands \
+       --threads "$PBS_NCPUS" --bgzf --log "$LOG" "$BAM" "$RAW"; then
+    tabix -p bed "$RAW"
+    bgzip -dc "$RAW" | awk -v c="$MIN_COV" '$10 >= c' | bgzip -@4 > "$FILTERED"
+    tabix -p bed "$FILTERED"
+    NM=$(bgzip -dc "$FILTERED" | awk '$4=="m"' | wc -l)
+    NH=$(bgzip -dc "$FILTERED" | awk '$4=="h"' | wc -l)
+    echo "[$(date)] $SID ok: 5mC=$NM 5hmC=$NH"
+  else
+    echo "[$(date)] $SID FAILED modkit"
+  fi
+done
+echo "[$(date)] modkit loop done"
