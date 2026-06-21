@@ -83,9 +83,5 @@ Weights are explicit and tunable (`prioritise.py --w-pip --w-func --w-sv`); the 
 is a transparent, reproducible ranking, not a black box. Output:
 `chr22.prioritised.txt.gz`, sorted by score.
 
-## Status / decisions for Sam
-- Fine-mapping needs the susieR/rpy2 install above.
-- SV integration thresholds (LD r², SV-assoc p) are placeholders — set with Sam.
-- Functional tracks: generic ENCODE now; tissue-specific for PROPHECY.
 - Prioritisation weights: start equal, calibrate against known mQTLs.
 - All of this is chr22-only; the same scripts scale per-chromosome genome-wide.
