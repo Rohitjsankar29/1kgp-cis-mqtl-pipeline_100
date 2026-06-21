@@ -104,3 +104,26 @@ qsub scripts/05_qtl/run_perm_gpu.pbs
 Paths in the PBS scripts are specific to the Gadi setup (`/scratch/cy94/rs4477`,
 `/g/data/xl04/rs4477`); adjust the variables at the top of each for a different
 environment.
+
+## Downstream framework (stages 06–09)
+
+After the cis-mQTL scan, the framework fine-maps, integrates structural variants
+and functional annotation, and produces a ranked candidate-causal-variant list:
+
+```bash
+qsub scripts/05_qtl/run_nominal.pbs      # 05c nominal per-pair stats (sig CpGs)
+qsub scripts/05_qtl/run_null_gpu.pbs     # 05d permuted-null calibration (λ≈1?)
+qsub scripts/06_finemap/run_finemap.pbs  # SuSiE PIP + 95% credible sets
+# 07 SV integration, 08 functional annotation, 09 prioritisation
+python3 scripts/09_prioritise/prioritise_framework.py --susie ... --nominal ... --out ...
+```
+
+## Documentation & results
+
+- **`docs/METHODS_AND_CODE_WALKTHROUGH.md`** — stage-by-stage annotated explanation
+  of every script (purpose, rationale, key code, parameters) plus a viva concept
+  glossary.
+- **`docs/PILOT_RESULTS.md`** — the chr22 / n=100 pilot results: λ=1.446,
+  6,995 significant CpGs, null λ=1.104, 97% credible-set resolution, SV
+  integration, and prioritisation convergence (ρ=0.63).
+- **`docs/WORKFLOW.md`**, **`docs/DOWNSTREAM.md`** — workflow and downstream notes.

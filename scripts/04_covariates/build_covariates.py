@@ -1,56 +1,105 @@
 #!/usr/bin/env python3
+"""cis-mQTL covariate matrix (v2): known covariates + ancestry + residual structure.
+
+  known covariates : sex, platform (R9/R10 batch), and age if provided (PROPHECY)
+  genotype PCs     : ancestry / population structure (from plink2 --pca)
+  methylation PCs  : hidden structure REMAINING after regressing out the known
+                     covariates + genotype PCs -- so sex/platform/ancestry are
+                     not double-counted (PEER-style residual factors).
+
+Output: covariates as ROWS, samples as COLUMNS (tensorQTL reads it transposed).
 """
-build_covariates.py — assemble tensorQTL covariates from data only:
-  - genotype PCs   (from plink2 --pca .eigenvec)  -> population structure
-  - methylation PCs (PCA of the phenotype matrix)  -> hidden technical structure
-Output: covariates.tsv in tensorQTL layout (covariates as rows, samples as cols).
-"""
-import argparse, sys
+import argparse, gzip
 import numpy as np
 import pandas as pd
 
 
+def read_matrix(path):
+    op = gzip.open if path.endswith(".gz") else open
+    with op(path, "rt") as f:
+        hdr = f.readline().rstrip("\n").split("\t")
+    samples = hdr[4:]
+    df = pd.read_csv(path, sep="\t")
+    M = df.iloc[:, 4:].astype(float)
+    M.columns = samples
+    return samples, M
+
+
+def residual_methylation_pcs(M, k, C):
+    """PCs of the methylation matrix after regressing out known covariates C."""
+    X = M.values.T.astype(float)                 # samples x CpGs
+    X = X - X.mean(0, keepdims=True)
+    if C is not None and C.shape[1] > 0:
+        Cc = np.column_stack([np.ones(C.shape[0]), C])
+        beta, *_ = np.linalg.lstsq(Cc, X, rcond=None)
+        X = X - Cc @ beta                        # residualise
+    G = X @ X.T                                  # samples x samples Gram
+    w, V = np.linalg.eigh(G)
+    idx = np.argsort(w)[::-1][:k]
+    return V[:, idx]
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--matrix", required=True, help="methylation_Mval.bed.gz")
+    ap.add_argument("--matrix", required=True)
     ap.add_argument("--geno-pca", required=True, help="plink2 .eigenvec")
+    ap.add_argument("--metadata", required=True, help="TSV: sample, sex, platform[, age]")
+    ap.add_argument("--n-geno-pc", type=int, default=5)
+    ap.add_argument("--n-meth-pc", type=int, default=5)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--n-meth-pc", type=int, default=10)
     a = ap.parse_args()
 
-    # --- genotype PCs ---
-    gp = pd.read_csv(a.geno_pca, sep=r"\s+")
-    iid = "IID" if "IID" in gp.columns else gp.columns[1]
-    gp = gp.set_index(iid)
-    pcs = [c for c in gp.columns if c.upper().startswith("PC")]
-    geno = gp[pcs].copy()
-    geno.columns = [f"genoPC{i+1}" for i in range(len(pcs))]
-    print(f"geno PCs: {geno.shape}", file=sys.stderr)
+    samples, M = read_matrix(a.matrix)
+    n = len(samples)
+    known = {}   # known covariates only (used both as covariates and to residualise)
 
-    # --- methylation PCs (eigU of the 100x100 sample Gram matrix) ---
-    df = pd.read_csv(a.matrix, sep="\t")
-    samples = list(df.columns[4:])
-    X = df[samples].to_numpy(dtype=float).T          # samples x CpGs
-    X = (X - X.mean(0)) / (X.std(0) + 1e-8)          # standardise CpGs
-    G = X @ X.T                                       # samples x samples
-    val, vec = np.linalg.eigh(G)
-    order = np.argsort(val)[::-1]
-    k = min(a.n_meth_pc, vec.shape[1])
-    meth = pd.DataFrame(vec[:, order[:k]], index=samples,
-                        columns=[f"methPC{i+1}" for i in range(k)])
-    print(f"meth PCs: {meth.shape}", file=sys.stderr)
+    md = pd.read_csv(a.metadata, sep="\t", dtype=str).set_index("sample").reindex(samples)
 
-    # --- merge, keep matrix sample order ---
-    cov = meth.join(geno, how="left").loc[samples]
-    if cov.isna().any().any():
-        miss = cov.index[cov.isna().any(axis=1)].tolist()
-        print(f"WARN: missing geno PCs for {miss} -> filled 0", file=sys.stderr)
-        cov = cov.fillna(0.0)
+    if "sex" in md.columns:
+        sx = md["sex"].map({"M": 0, "F": 1})
+        if sx.isna().any():
+            print(f"WARNING: sex missing for {int(sx.isna().sum())}; dropping sex")
+        elif sx.nunique() < 2:
+            print("NOTE: sex monomorphic; dropping sex")
+        else:
+            known["sex"] = sx.values.astype(float)
 
-    out = cov.T                                       # covariates x samples
-    out.index.name = "id"
+    if "platform" in md.columns and md["platform"].nunique() > 1:
+        levels = sorted(md["platform"].dropna().unique())
+        for lv in levels[1:]:                     # first level = reference
+            known[f"platform_{lv}"] = (md["platform"] == lv).astype(float).values
+        print(f"platform levels {levels}; reference={levels[0]}")
+    elif "platform" in md.columns:
+        print("NOTE: platform monomorphic; dropping platform")
+
+    if "age" in md.columns and md["age"].notna().any():
+        age = pd.to_numeric(md["age"], errors="coerce")
+        if age.notna().all():
+            known["age"] = ((age - age.mean()) / age.std()).values
+        else:
+            print("NOTE: age incomplete; dropping age")
+    else:
+        print("age: not provided (expected for 1000G) -- skipping")
+
+    ev = pd.read_csv(a.geno_pca, sep=r"\s+")
+    iidcol = "IID" if "IID" in ev.columns else ev.columns[1]
+    ev = ev.set_index(iidcol).reindex(samples)
+    for c in [c for c in ev.columns if c.upper().startswith("PC")][:a.n_geno_pc]:
+        known[f"geno{c.upper()}"] = ev[c].astype(float).values
+
+    C = np.column_stack(list(known.values())) if known else np.empty((n, 0))
+    PC = residual_methylation_pcs(M, a.n_meth_pc, C)
+
+    cov = dict(known)
+    for i in range(a.n_meth_pc):
+        cov[f"methPC{i+1}"] = PC[:, i]
+
+    out = pd.DataFrame(cov, index=samples).T
+    out.index.name = "ID"
     out.to_csv(a.out, sep="\t")
-    print(f"covariates: {out.shape[0]} x {out.shape[1]} -> {a.out}", file=sys.stderr)
+    print(f"Wrote {a.out}: {out.shape[0]} covariates x {out.shape[1]} samples")
+    print("  " + ", ".join(out.index.tolist()))
+    print(f"  residual df ~ {n - out.shape[0] - 2}  (keep this comfortably positive at n={n})")
 
 
 if __name__ == "__main__":
