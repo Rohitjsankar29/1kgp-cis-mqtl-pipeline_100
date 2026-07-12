@@ -1,0 +1,36 @@
+#!/bin/bash
+# run_asm_batch.pbs — run the ASM worker across a sample list as an array job.
+# Concurrency capped (%4) so only ~4 samples' intermediates exist at once, and
+# each worker cleans up after itself -> storage-safe for all 100.
+#
+# Submit with the array range matching your sample list length, e.g.:
+#   first test:   qsub -J 1-8%4  run_asm_batch.pbs
+#   full run:     qsub -J 1-100%4 run_asm_batch.pbs
+#
+#PBS -N asm_batch
+#PBS -P cy94
+#PBS -q normal
+#PBS -l ncpus=4
+#PBS -l mem=48GB
+#PBS -l walltime=02:00:00
+#PBS -l storage=scratch/cy94+gdata/xl04
+#PBS -l wd
+#PBS -j oe
+#PBS -r y
+#PBS -o /scratch/cy94/rs4477/logs/asm_batch.^array_index^.log
+set -uo pipefail
+
+SC=/scratch/cy94/rs4477/cov_v2
+# sample list: two columns  SAMPLE <tab> MODBAM_PATH  (one per line)
+LIST=/scratch/cy94/rs4477/1kgp-cis-mqtl/asm/sample_list.tsv
+REGIONS=/scratch/cy94/rs4477/1kgp-cis-mqtl/asm/HG00355/regions.bed
+PANEL=/g/data/xl04/rs4477/1kgp-cis-mqtl/genotypes/chr22/1kGP_high_coverage_Illumina.chr22.filtered.SNV_INDEL_SV_phased_panel.vcf.gz
+REF=/scratch/cy94/rs4477/reference/hg38.fa
+ASMROOT=/scratch/cy94/rs4477/1kgp-cis-mqtl/asm
+
+LINE=$(sed -n "${PBS_ARRAY_INDEX}p" "$LIST")
+SAMPLE=$(echo "$LINE" | cut -f1)
+MODBAM=$(echo "$LINE" | cut -f2)
+echo "array $PBS_ARRAY_INDEX -> sample $SAMPLE  bam $MODBAM"
+
+bash "$SC/asm_sample_worker.sh" "$SAMPLE" "$MODBAM" "$REGIONS" "$PANEL" "$REF" "$ASMROOT" 4
