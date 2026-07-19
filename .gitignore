@@ -41,3 +41,7 @@ micromamba/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+
+# but DO track result tables in results/
+!results/*.txt.gz
+!results/*.tsv.gz
